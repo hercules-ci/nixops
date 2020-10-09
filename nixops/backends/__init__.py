@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import json
 import os
 import re
 import subprocess
@@ -129,36 +130,48 @@ class MachineState(nixops.resources.ResourceState):
             res.is_reachable = True
             res.load = avg
 
+            # Get the systemd units
+            # Example:
+            # {
+            #   "unit": "systemd-tmpfiles-clean.timer",
+            #   "load": "loaded",
+            #   "active": "active",
+            #   "sub": "waiting",
+            #   "description": "Daily Cleanup of Temporary Directories"
+            # }
+            unitsText : str = self.run_command(
+                "systemctl --all --full --no-legend --output json", capture_stdout=True
+            )
+            units = json.load(outText)
             # Get the systemd units that are in a failed state or in progress.
-            out = self.run_command("systemctl --all --full --no-legend",
-                                   capture_stdout=True).split('\n')
             res.failed_units = []
             res.in_progress_units = []
-            for l in out:
-                match = re.match("^([^ ]+) .* failed .*$", l)
-                if match: res.failed_units.append(match.group(1))
+            for unit in units:
+                if unit.sub == "failed":
+                    res.failed_units.append(unit.unit)
 
                 # services that are in progress
-                match = re.match("^([^ ]+) .* activating .*$", l)
-                if match: res.in_progress_units.append(match.group(1))
+                if unit.active == "activating"
+                    res.in_progress_units.append(unit.unit)
 
                 # Currently in systemd, failed mounts enter the
                 # "inactive" rather than "failed" state.  So check for
                 # that.  Hack: ignore special filesystems like
                 # /sys/kernel/config and /tmp. Systemd tries to mount these
                 # even when they don't exist.
-                match = re.match("^([^\.]+\.mount) .* inactive .*$", l)
-                if match and not match.group(1).startswith("sys-") \
-                         and not match.group(1).startswith("dev-") \
-                         and not match.group(1) == "tmp.mount":
-                    res.failed_units.append(match.group(1))
-
-                if match and match.group(1) == "tmp.mount":
-                    try:
-                        self.run_command("cat /etc/fstab | cut -d' ' -f 2 | grep '^/tmp$' &> /dev/null")
-                    except:
-                        continue
-                    res.failed_units.append(match.group(1))
+                if unit.active == "inactive" and unit.unit.endswith(".mount"):
+                    if unit.unit == "tmp.mount":
+                        try:
+                            # throw if we don't need a /tmp mount
+                            self.run_command(
+                                "cat /etc/fstab | cut -d' ' -f 2 | grep '^/tmp$' &> /dev/null"
+                            )
+                            # turns out we need it
+                            res.failed_units.append(unit.unit)
+                        except Exception:
+                            pass
+                    elif not unit.unit.startswith("sys-") and not unit.unit.startswith("dev-"):
+                        res.failed_units.append(unit.unit)
 
     def restore(self, defn, backup_id, devices=[]):
         """Restore persistent disks to a given backup, if possible."""
