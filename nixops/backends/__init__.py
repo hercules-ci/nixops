@@ -148,17 +148,21 @@ class MachineState(nixops.resources.ResourceState):
                 # /sys/kernel/config and /tmp. Systemd tries to mount these
                 # even when they don't exist.
                 match = re.match("^([^\.]+\.mount) .* inactive .*$", l)
-                if match and not match.group(1).startswith("sys-") \
-                         and not match.group(1).startswith("dev-") \
-                         and not match.group(1) == "tmp.mount":
-                    res.failed_units.append(match.group(1))
 
-                if match and match.group(1) == "tmp.mount":
-                    try:
-                        self.run_command("cat /etc/fstab | cut -d' ' -f 2 | grep '^/tmp$' &> /dev/null")
-                    except:
-                        continue
-                    res.failed_units.append(match.group(1))
+                if match:
+                    unit = match.group(1)
+                    isSystemMount = unit.startswith("sys-") or unit.startswith("dev-")
+                    isBuiltinMount = unit == "tmp.mount" or unit == "home.mount"
+
+                    if not isSystemMount and not isBuiltinMount:
+                        res.failed_units.append(unit)
+
+                    if isBuiltinMount:
+                        try:
+                            self.run_command("cat /etc/fstab | cut -d' ' -f 2 | grep '^/tmp$' &> /dev/null")
+                        except:
+                            continue
+                        res.failed_units.append(unit)
 
     def restore(self, defn, backup_id, devices=[]):
         """Restore persistent disks to a given backup, if possible."""
